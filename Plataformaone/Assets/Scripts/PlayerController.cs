@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 [RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(SphereCollider))]
 public class PlayerController : MonoBehaviour
 {
     [Header("Input")]
@@ -17,6 +18,10 @@ public class PlayerController : MonoBehaviour
     public float maxAngularVelocity = 25f;
     [Tooltip("Max horizontal linear speed (m/s).")]
     public float maxLinearSpeed = 8f;
+    [Tooltip("If true, movement input is relative to the camera's orientation. If false, uses world axes.")]
+    public bool useCameraRelative = true;
+    [Tooltip("Optional camera transform to use for camera-relative movement. If null, Camera.main is used.")]
+    public Transform cameraTransform;
 
     [Header("Jump")]
     [Tooltip("Impulse force applied when jumping.")]
@@ -26,15 +31,15 @@ public class PlayerController : MonoBehaviour
     [Tooltip("Extra distance used for the ground raycast/test.")]
     public float groundTolerance = 0.05f;
 
-    Rigidbody rb;
-    SphereCollider sphereCollider;
-    bool isGrounded;
+    Rigidbody _rb;
+    SphereCollider _sphereCollider;
+    bool _isGrounded;
 
     void Awake()
     {
-        rb = GetComponent<Rigidbody>();
-        sphereCollider = GetComponent<SphereCollider>();
-        if (rb == null)
+        _rb = GetComponent<Rigidbody>();
+        _sphereCollider = GetComponent<SphereCollider>();
+        if (_rb == null)
         {
             Debug.LogError("PlayerController requires a Rigidbody.", this);
             enabled = false;
@@ -42,8 +47,8 @@ public class PlayerController : MonoBehaviour
         }
 
         // Keep Rigidbody settings reasonable for a rolling ball
-        rb.maxAngularVelocity = maxAngularVelocity;
-        rb.constraints = RigidbodyConstraints.None;
+        _rb.maxAngularVelocity = maxAngularVelocity;
+        _rb.constraints = RigidbodyConstraints.None;
     }
 
     void OnEnable()
@@ -79,51 +84,82 @@ public class PlayerController : MonoBehaviour
             input = moveAction.action.ReadValue<Vector2>();
 
         // Convert 2D input (x = right, y = forward) into torque applied to the ball.
-        // The exact sign may be tuned depending on your scene orientation.
-        Vector3 torque = new Vector3(-input.y, 0f, input.x) * torqueStrength;
-        rb.AddTorque(torque, ForceMode.Force);
+        // If camera-relative movement is enabled, map input into world-space using the camera's forward/right projected onto XZ plane.
+        Vector3 desiredDir;
+        if (useCameraRelative)
+        {
+            Transform cam = cameraTransform != null ? cameraTransform : Camera.main != null ? Camera.main.transform : null;
+            if (cam != null)
+            {
+                Vector3 camForward = cam.forward;
+                camForward.y = 0f;
+                camForward.Normalize();
+                Vector3 camRight = cam.right;
+                camRight.y = 0f;
+                camRight.Normalize();
+                desiredDir = camForward * input.y + camRight * input.x;
+            }
+            else
+            {
+                // fallback to world-relative mapping
+                desiredDir = new Vector3(input.x, 0f, input.y);
+            }
+        }
+        else
+        {
+            desiredDir = new Vector3(input.x, 0f, input.y);
+        }
+
+        // Convert desired direction into torque that rolls the ball in that direction.
+        Vector3 torque = Vector3.zero;
+        if (desiredDir.sqrMagnitude > 1e-6f)
+        {
+            torque = Vector3.Cross(desiredDir.normalized, Vector3.up) * torqueStrength;
+        }
+        _rb.AddTorque(torque, ForceMode.Force);
 
         // Limit horizontal linear speed
-        Vector3 horizontalVelocity = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
+        // Limit horizontal linear speed
+        Vector3 horizontalVelocity = new Vector3(_rb.linearVelocity.x, 0f, _rb.linearVelocity.z);
         if (horizontalVelocity.magnitude > maxLinearSpeed)
         {
             Vector3 limited = horizontalVelocity.normalized * maxLinearSpeed;
-            rb.linearVelocity = new Vector3(limited.x, rb.linearVelocity.y, limited.z);
+            _rb.linearVelocity = new Vector3(limited.x, _rb.linearVelocity.y, limited.z);
         }
 
         // Keep rb.maxAngularVelocity synced with inspector if changed at runtime
-        if (rb.maxAngularVelocity != maxAngularVelocity)
-            rb.maxAngularVelocity = maxAngularVelocity;
+        if (!Mathf.Approximately(_rb.maxAngularVelocity, maxAngularVelocity))
+            _rb.maxAngularVelocity = maxAngularVelocity;
     }
 
     void OnJumpPerformed(InputAction.CallbackContext ctx)
     {
-        if (!isGrounded)
+        if (!_isGrounded)
             return;
 
-        rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
+        _rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
     }
 
     void UpdateGrounded()
     {
         // If the object has a SphereCollider, use its radius to test for ground.
         float radius = 0.5f;
-        if (sphereCollider != null)
+        if (_sphereCollider != null)
         {
             // Account for lossyScale
             float maxScale = Mathf.Max(transform.lossyScale.x, transform.lossyScale.y, transform.lossyScale.z);
-            radius = sphereCollider.radius * maxScale;
+            radius = _sphereCollider.radius * maxScale;
         }
 
         // Raycast down from center to check if within (radius + tolerance) of ground
         float checkDistance = radius + groundTolerance;
-        isGrounded = Physics.Raycast(transform.position, Vector3.down, checkDistance, groundLayers.value);
+        _isGrounded = Physics.Raycast(transform.position, Vector3.down, checkDistance, groundLayers.value);
     }
 
     void OnDrawGizmosSelected()
     {
         // Visualize ground check ray
-        SphereCollider sc = sphereCollider;
+        SphereCollider sc = _sphereCollider;
         if (sc == null)
             sc = GetComponent<SphereCollider>();
 
